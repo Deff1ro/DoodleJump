@@ -83,13 +83,23 @@ protected:
 
 private:
 	void Move(const FInputActionValue& Value);
+	void ClearMovementInput(const FInputActionValue& Value);
 	void Look(const FInputActionValue& Value);
 	void AutoJump();
 	void AutoRotate(float DeltaTime);
+	void ManualMovement(float DeltaTime);
 
 	bool bIsFrozen;
 	FTimerHandle FreezeTimerHandle;
 	AActor* FreezeAttachmentActor;
 	FVector FreezeRelativeOffset;  // Store offset from attachment actor
 	void UnfreezeCharacter();
+
+	// Knockback state
+	bool bIsKnockedBack;
+	FTimerHandle KnockbackTimerHandle;
+	void EndKnockback();
+
+	// Manual movement input storage
+	FVector2D CurrentMovementInput;
 };

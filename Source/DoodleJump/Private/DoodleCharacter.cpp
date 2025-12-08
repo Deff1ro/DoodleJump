@@ -32,7 +32,18 @@ ADoodleCharacter::ADoodleCharacter()
 		CharMovement->AirControl = 1.0f;
 		CharMovement->GravityScale = 1.5f;
 		CharMovement->JumpZVelocity = 600.0f;
-		CharMovement->BrakingDecelerationWalking = 0.0f;
+
+		// COMPLETELY remove inertia - instant stop when input released
+		CharMovement->BrakingDecelerationWalking = 10000.0f;  // Extremely high for instant stop
+		CharMovement->GroundFriction = 100.0f;  // Maximum friction
+		CharMovement->BrakingFrictionFactor = 10.0f;  // Maximum friction when braking
+		CharMovement->bUseSeparateBrakingFriction = true;  // Enable separate braking friction
+		CharMovement->MaxAcceleration = 10000.0f;  // Instant acceleration
+
+		// CRITICAL: Disable automatic velocity inheritance from moving platforms
+		CharMovement->bImpartBaseVelocityX = false;  // Don't inherit X velocity from base
+		CharMovement->bImpartBaseVelocityY = false;  // Don't inherit Y velocity from base
+		CharMovement->bImpartBaseVelocityZ = false;  // Don't inherit Z velocity from base
 	}
 
 	MovementSpeed = 600.0f;
@@ -48,6 +59,8 @@ ADoodleCharacter::ADoodleCharacter()
 	DefaultFreezeDuration = 5.0f;
 	bIsFrozen = false;
 	FreezeAttachmentActor = nullptr;
+	bIsKnockedBack = false;
+	CurrentMovementInput = FVector2D::ZeroVector;
 }
 
 void ADoodleCharacter::BeginPlay()
@@ -84,12 +97,29 @@ void ADoodleCharacter::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
 
+	UCharacterMovementComponent* CharMovement = GetCharacterMovement();
+
+	// CRITICAL: Force clear horizontal velocity EVERY frame to prevent ANY external forces
+	// Only vertical velocity (Z) is preserved for jumping/gravity
+	// EXCEPTION: Don't clear during knockback - let LaunchCharacter velocity work
+	if (CharMovement && !bIsKnockedBack)
+	{
+		FVector CurrentVelocity = CharMovement->Velocity;
+		CharMovement->Velocity = FVector(0.0f, 0.0f, CurrentVelocity.Z);  // Keep only Z (vertical) velocity
+	}
+
 	// If frozen and attached to moving object, follow it manually
 	if (bIsFrozen && FreezeAttachmentActor)
 	{
 		FVector NewLocation = FreezeAttachmentActor->GetActorLocation() + FreezeRelativeOffset;
 		// USE SWEEP TO PRESERVE COLLISIONS!
 		SetActorLocation(NewLocation, true);  // bSweep = true preserves collision detection
+	}
+
+	// Manual movement system - direct position change (disabled during knockback)
+	if (!bIsKnockedBack)
+	{
+		ManualMovement(DeltaTime);
 	}
 
 	AutoJump();
@@ -104,7 +134,10 @@ void ADoodleCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCom
 	{
 		if (MoveAction)
 		{
+			// Triggered - called every frame while button held
 			EnhancedInputComponent->BindAction(MoveAction, ETriggerEvent::Triggered, this, &ADoodleCharacter::Move);
+			// Completed - called when button released - clear input
+			EnhancedInputComponent->BindAction(MoveAction, ETriggerEvent::Completed, this, &ADoodleCharacter::ClearMovementInput);
 		}
 
 		if (LookAction)
@@ -118,22 +151,57 @@ void ADoodleCharacter::Move(const FInputActionValue& Value)
 {
 	if (bIsFrozen)
 	{
+		CurrentMovementInput = FVector2D::ZeroVector;
 		return;
 	}
 
-	FVector2D MovementVector = Value.Get<FVector2D>();
+	// Just store the input - actual movement happens in ManualMovement()
+	CurrentMovementInput = Value.Get<FVector2D>();
+}
 
-	if (Controller)
+void ADoodleCharacter::ClearMovementInput(const FInputActionValue& Value)
+{
+	// Called when button released - clear input for instant stop
+	CurrentMovementInput = FVector2D::ZeroVector;
+}
+
+void ADoodleCharacter::ManualMovement(float DeltaTime)
+{
+	if (bIsFrozen)
 	{
-		const FRotator Rotation = Controller->GetControlRotation();
-		const FRotator YawRotation(0, Rotation.Yaw, 0);
-
-		const FVector ForwardDirection = FRotationMatrix(YawRotation).GetUnitAxis(EAxis::X);
-		const FVector RightDirection = FRotationMatrix(YawRotation).GetUnitAxis(EAxis::Y);
-
-		AddMovementInput(ForwardDirection, MovementVector.Y);
-		AddMovementInput(RightDirection, MovementVector.X);
+		return;
 	}
+
+	if (!Controller)
+	{
+		return;
+	}
+
+	// PURE DIRECT INPUT - NO VELOCITY TRACKING, NO INERTIA, NO PHYSICS
+	// Movement is ONLY based on current button press - nothing else affects it
+
+	if (CurrentMovementInput.IsNearlyZero())
+	{
+		// No input = no movement at all
+		return;
+	}
+
+	// Calculate movement direction from input
+	const FRotator Rotation = Controller->GetControlRotation();
+	const FRotator YawRotation(0, Rotation.Yaw, 0);
+	const FVector ForwardDirection = FRotationMatrix(YawRotation).GetUnitAxis(EAxis::X);
+	const FVector RightDirection = FRotationMatrix(YawRotation).GetUnitAxis(EAxis::Y);
+
+	FVector InputDirection = (ForwardDirection * CurrentMovementInput.Y) + (RightDirection * CurrentMovementInput.X);
+	InputDirection.Normalize();
+
+	// Calculate movement distance for this frame (distance = speed * time)
+	FVector MovementDelta = InputDirection * MovementSpeed * DeltaTime;
+
+	// Apply movement directly - no velocity, no acceleration, just pure position change
+	FVector CurrentLocation = GetActorLocation();
+	FVector NewLocation = CurrentLocation + MovementDelta;
+	SetActorLocation(NewLocation, true);
 }
 
 void ADoodleCharacter::Look(const FInputActionValue& Value)
@@ -283,6 +351,12 @@ void ADoodleCharacter::ApplyKnockback(FVector Direction, float Force)
 		UE_LOG(LogTemp, Warning, TEXT("Character unfrozen successfully"));
 	}
 
+	// CRITICAL: Clear movement input to prevent interference with knockback
+	CurrentMovementInput = FVector2D::ZeroVector;
+
+	// Set knockback state flag to prevent velocity clearing in Tick
+	bIsKnockedBack = true;
+
 	// Normalize direction to ensure consistent knockback force
 	FVector KnockbackDirection = Direction.GetSafeNormal();
 
@@ -290,7 +364,17 @@ void ADoodleCharacter::ApplyKnockback(FVector Direction, float Force)
 	FVector KnockbackVelocity = KnockbackDirection * Force;
 	LaunchCharacter(KnockbackVelocity, true, true);
 
+	// End knockback after 0.5 seconds (allow physics to work)
+	GetWorld()->GetTimerManager().SetTimer(KnockbackTimerHandle, this, &ADoodleCharacter::EndKnockback, 0.5f, false);
+
 	UE_LOG(LogTemp, Warning, TEXT("Knockback applied! Direction: %s, Force: %.2f"), *KnockbackDirection.ToString(), Force);
+	UE_LOG(LogTemp, Warning, TEXT("Movement input cleared, knockback state active"));
 	UE_LOG(LogTemp, Warning, TEXT("Character velocity after knockback: %s"), *CharMovement->Velocity.ToString());
+}
+
+void ADoodleCharacter::EndKnockback()
+{
+	bIsKnockedBack = false;
+	UE_LOG(LogTemp, Warning, TEXT("Knockback ended - player control restored"));
 }
 

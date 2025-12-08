@@ -25,9 +25,13 @@ ADart::ADart()
 	CollisionCapsule->SetCapsuleHalfHeight(50.0f);
 	CollisionCapsule->SetCapsuleRadius(10.0f);
 
-	// Enable collision and simulation physics on capsule
-	CollisionCapsule->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+	// Enable collision but DISABLE physics simulation to prevent momentum transfer
+	CollisionCapsule->SetCollisionEnabled(ECollisionEnabled::QueryOnly);  // QueryOnly = no physics simulation
 	CollisionCapsule->SetNotifyRigidBodyCollision(true); // Enable hit events
+
+	// CRITICAL: Disable simulation to prevent the dart from transferring velocity to the player
+	CollisionCapsule->SetSimulatePhysics(false);
+	CollisionCapsule->SetEnableGravity(false);
 
 	// Default values
 	DartSpeed = 500.0f;
@@ -101,6 +105,7 @@ void ADart::OnCapsuleHit(UPrimitiveComponent* HitComponent, AActor* OtherActor, 
 	else
 	{
 		UE_LOG(LogTemp, Warning, TEXT(">>> PLAYER LANDED ON DART - NO KNOCKBACK (acts as platform) <<<"));
-		// Player landed on dart or dart hit from wrong angle - do nothing, collision works as normal platform
+		// Player landed on dart or dart hit from wrong angle - act as static platform
+		// No velocity inheritance possible since movement is pure input-based (no velocity tracking)
 	}
 }
